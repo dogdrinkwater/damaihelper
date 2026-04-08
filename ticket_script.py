@@ -4,6 +4,7 @@ from time import sleep, time
 from pickle import dump, load
 from os.path import exists
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.common import exceptions
 from selenium.webdriver.common.by import By
@@ -75,36 +76,58 @@ class Concert(object):
         print(u'###开始登录###')
         self.driver.get(self.target_url)
         WebDriverWait(self.driver, 10, 0.1).until(EC.title_contains('商品详情'))
+        sleep(2)  # 等待JS框架渲染完成
         self.set_cookie()
 
     def enter_concert(self):
         print(u'###打开浏览器，进入大麦网###')
         if not exists('cookies.pkl'):   # 如果不存在cookie.pkl,就获取一下
-            self.driver = webdriver.Chrome(executable_path=self.driver_path)
+            self.driver = webdriver.Chrome(service=Service(self.driver_path))
             self.get_cookie()
             print(u'###成功获取Cookie，重启浏览器###')
             self.driver.quit()
 
         options = webdriver.ChromeOptions()
-        # 禁止图片、js、css加载
-        prefs = {"profile.managed_default_content_settings.images": 2,
-                 "profile.managed_default_content_settings.javascript": 1,
-                 'permissions.default.stylesheet': 2}
-        mobile_emulation = {"deviceName": "Nexus 6"}
-        options.add_experimental_option("prefs", prefs)
+        # 不屏蔽任何资源，确保移动端页面完整渲染
+        # 模拟真实 Android 设备（小米14 / Android 14）
+        mobile_emulation = {
+            "deviceMetrics": {
+                "width": 393,
+                "height": 851,
+                "pixelRatio": 3.0,
+                "touch": True
+            },
+            "userAgent": (
+                "Mozilla/5.0 (Linux; Android 14; 23116PN5BC Build/UKQ1.230917.001; wv) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Version/4.0 Chrome/146.0.7680.165 Mobile Safari/537.36"
+            )
+        }
         options.add_experimental_option("mobileEmulation", mobile_emulation)
-        # 就是这一行告诉chrome去掉了webdriver痕迹，令navigator.webdriver=false，极其关键
+        # 去除webdriver痕迹
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
 
-        # 更换等待策略为不等待浏览器加载完全就进行下一步操作
+        # 更换等待策略为normal，确保JS框架完整渲染页面元素
         capa = DesiredCapabilities.CHROME
         # normal, eager, none
-        capa["pageLoadStrategy"] = "eager"
+        capa["pageLoadStrategy"] = "normal"
         self.driver = webdriver.Chrome(
-            executable_path=self.driver_path, options=options, desired_capabilities=capa)
+            service=Service(self.driver_path), options=options, desired_capabilities=capa)
+        # 通过CDP进一步清除自动化特征
+        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh']});
+                window.chrome = { runtime: {} };
+            """
+        })
         # 登录到具体抢购页面
         self.login()
         self.driver.refresh()
+        sleep(2)  # 等待页面JS渲染完成
         # try:
         #     # 等待nickname出现
         #     locator = (By.XPATH, "/html/body/div[1]/div/div[3]/div[1]/a[2]/div")
@@ -350,7 +373,7 @@ class Concert(object):
 
 if __name__ == '__main__':
     try:
-        with open('./config.json', 'r', encoding='utf-8') as f:
+        with open('./config/config.json', 'r', encoding='utf-8') as f:
             config = loads(f.read())
             # params: 场次优先级，票价优先级，实名者序号, 用户昵称， 购买票数， 官网网址， 目标网址, 浏览器驱动地址
         con = Concert(config['date'], config['sess'], config['price'], config['real_name'], config['nick_name'],
